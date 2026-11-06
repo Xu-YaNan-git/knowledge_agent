@@ -31,10 +31,10 @@ class NodeEntry(BaseNode):
         #5.md还是pdf
         if import_file_path_obj.suffix == ".md":
             state["is_md_read_enabled"] = True
-            state["md_path"]=import_file_path_obj
+            state["md_path"]=import_file_path
         elif import_file_path_obj.suffix == ".pdf":
             state["is_pdf_read_enabled"] = True
-            state["pdf_path"]=import_file_path_obj
+            state["pdf_path"]=import_file_path
         else:
             raise FileProcessingError(message=f"不支持的文件格式: #{import_file_path}")
 

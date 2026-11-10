@@ -20,5 +20,5 @@ llm_config = LLMConfig(
     vl_model=os.getenv("VL_MODEL"),
     llm_model=os.getenv("LLM_DEFAULT_MODEL"),
     item_model=os.getenv("ITEM_MODEL"),
-    llm_temperature=float(os.getenv("LLM_DEFAULT_TEMPERATURE"))
+    llm_temperature=float(os.getenv("LLM_DEFAULT_TEMPERATURE", "0.1"))
 )

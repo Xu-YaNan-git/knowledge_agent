@@ -5,6 +5,8 @@ from config.llm_config import llm_config
 _llm_client_cache={}
 
 def get_llm_client(model:str|None=None ,json_model:bool=False):
+    if not llm_config.api_key or llm_config.api_key.startswith("YOUR_"):
+        raise ValueError("OPENAI_API_KEY 仍是占位符，请在项目 .env 中填写有效的 OpenAI API Key")
     m = model or llm_config.llm_model
     key = (m,json_model)
     if key in _llm_client_cache:

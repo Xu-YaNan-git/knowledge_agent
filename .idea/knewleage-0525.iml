@@ -6,7 +6,7 @@
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
       <excludeFolder url="file://$MODULE_DIR$/lib/kb0525" />
     </content>
-    <orderEntry type="jdk" jdkName="D:\pycharm\knewleage-0525\lib\kb0525" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="D:\pycharm\knewleage-0525\.venv" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
 </module>

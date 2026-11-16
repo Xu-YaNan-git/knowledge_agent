@@ -1,8 +1,11 @@
+import json
+import logging
 from typing import List, Dict
 
-from processor.import_processor.base import BaseNode
+from processor.import_processor.base import BaseNode, setup_logging
 from processor.import_processor.exceptions import StateFieldError
 from processor.import_processor.state import ImportGraphState
+from utils.embedding_utils import generate_embeddings
 
 
 class NodeBGEEmbedding(BaseNode):
@@ -63,5 +66,63 @@ class NodeBGEEmbedding(BaseNode):
 
 
 
-    def _step_2_generate_embeddings(self, chunks):
-        pass
+    def _step_2_generate_embeddings(self, chunks: List[Dict[str, str]]) -> List[Dict[str, str]]:
+
+        """
+        步骤 2: 批量生成向量（核心业务逻辑）
+        核心逻辑：
+            1. 分批处理：避免一次性处理过多数据导致显存溢出（OOM）。
+            2. 文本构造：将 item_name 和 content 拼接，增强语义（商品名作为核心特征前置）。
+            3. 向量生成：调用模型批量生成 Dense（稠密）和 Sparse（稀疏）向量。
+        参数：
+            chunks: List[Dict] 待向量化的文本切片列表
+        返回：
+            List[Dict]: 包含向量字段（dense_vector/sparse_vector）的文本切片列表
+        """
+
+        # 初始化空列表，存储最终带向量的文本切片
+        output_data = []
+        # 设置批次大小（每批处理5条，可根据显存/性能调整：显存大则调大，反之调小）
+        batch_size = 5  # 设置批次大小，可以根据显存大小进行调整！
+
+        # 按批次遍历文本切片：range(起始, 终止, 步长) → 0,5,10... 分批处理
+        for i in range(0, len(chunks), batch_size):
+            batch_texts = chunks[i:i + batch_size]
+            input_texts = []
+            for doc in batch_texts:
+                item_name = doc["item_name"]
+                content = doc["content"]
+                input_texts.append(f"{item_name}\n{content}" if item_name else content)
+
+            docs_embeddings = generate_embeddings(input_texts)
+            for j, doc in enumerate(batch_texts):
+                item = doc.copy()
+                item["dense_vector"] = docs_embeddings["dense"][j]
+                item["sparse_vector"] = docs_embeddings["sparse"][j]
+                output_data.append(item)
+
+            self.logger.info(f"成功获取第 {i + 1}-{min(i + len(batch_texts), len(chunks))} 项的嵌入。")
+
+        # 返回带向量的文本切片列表（供后续存入Milvus）
+        return output_data
+
+
+if __name__ == "__main__":
+
+    setup_logging()
+
+    json_path = r"E:\output\H3C\H3C_new_new_chunks.json"
+    with open(json_path, "r", encoding="utf-8") as f:
+        state_json = f.read()
+
+    state = json.loads(state_json)
+
+    init_state = {
+        "chunks": state
+    }
+
+    # 执行核心处理流程
+    node_bge_embedding = NodeBGEEmbedding()
+    result = node_bge_embedding(init_state)
+
+    logging.getLogger().info(json.dumps(result, ensure_ascii=False, indent=4))

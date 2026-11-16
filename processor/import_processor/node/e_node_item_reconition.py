@@ -70,6 +70,16 @@ class NodeItemNameRecognition(BaseNode):
 
         # 步骤4：回填商品名称到状态和切片
         self._step_4_update_chunks(state, chunks, item_name)
+        backup_path ="E:\output\H3C\H3C_new_new_chunks.json"
+        with open(backup_path, "w", encoding="utf-8") as f:
+            json.dump(
+                chunks,
+                f,
+                # 开启 True："title": "\u4e00\u7ea7\u6807\u9898"（乱码，无法直接看）；
+                # 开启 False："title": "一级标题"（正常中文，人工可直接阅读）。
+                ensure_ascii=False,  # 保留中文，不转义为\u编码
+                indent=2  # 格式化缩进，便于阅读
+            )
 
         # 步骤5：为商品名称生成稠密/稀疏向量
         dense_vector, sparse_vector = self._step_5_generate_vectors(item_name)

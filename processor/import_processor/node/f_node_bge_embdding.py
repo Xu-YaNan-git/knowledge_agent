@@ -101,6 +101,17 @@ class NodeBGEEmbedding(BaseNode):
                 item["sparse_vector"] = docs_embeddings["sparse"][j]
                 output_data.append(item)
 
+            backup_path = "E:\output\H3C\H3C_new_new_new_chunks.json"
+            with open(backup_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    output_data,
+                    f,
+                    # 开启 True："title": "\u4e00\u7ea7\u6807\u9898"（乱码，无法直接看）；
+                    # 开启 False："title": "一级标题"（正常中文，人工可直接阅读）。
+                    ensure_ascii=False,  # 保留中文，不转义为\u编码
+                    indent=2  # 格式化缩进，便于阅读
+                )
+
             self.logger.info(f"成功获取第 {i + 1}-{min(i + len(batch_texts), len(chunks))} 项的嵌入。")
 
         # 返回带向量的文本切片列表（供后续存入Milvus）

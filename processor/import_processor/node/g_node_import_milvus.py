@@ -1,9 +1,11 @@
+import json
+import logging
 from typing import Dict, Any, List
 
 from pymilvus import DataType
 
 from config.milvus_config import milvus_config
-from processor.import_processor.base import BaseNode
+from processor.import_processor.base import BaseNode, setup_logging
 from processor.import_processor.exceptions import StateFieldError, MilvusError
 from processor.import_processor.node.e_node_item_reconition import escape_milvus_string
 from processor.import_processor.state import ImportGraphState
@@ -215,3 +217,24 @@ class NodeImportMilvus(BaseNode):
             item["chunk_id"] = inserted_ids[idx]
 
         return chunks_json_data
+
+
+if __name__ == "__main__":
+
+    setup_logging()
+
+    json_path = r"E:\output\H3C\H3C_new_new_new_chunks.json"
+    with open(json_path, "r", encoding="utf-8") as f:
+        state_json = f.read()
+
+    state = json.loads(state_json)
+
+    init_state = {
+        "chunks": state
+    }
+
+    # 执行核心处理流程
+    node_import_milvus = NodeImportMilvus()
+    result = node_import_milvus(init_state)
+
+    logging.getLogger().info(json.dumps(result, ensure_ascii=False, indent=4))

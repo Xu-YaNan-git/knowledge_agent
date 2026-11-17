@@ -1,4 +1,5 @@
 import logging
+import sys
 
 
 from langgraph.constants import END
@@ -13,6 +14,13 @@ from processor.import_processor.node.e_node_item_reconition import NodeItemNameR
 from processor.import_processor.node.f_node_bge_embdding import NodeBGEEmbedding
 from processor.import_processor.node.g_node_import_milvus import NodeImportMilvus
 from processor.import_processor.state import ImportGraphState
+
+
+def configure_utf8_console() -> None:
+    """将 Windows 控制台输出统一为 UTF-8，避免状态文本触发编码异常。"""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 
@@ -104,15 +112,17 @@ class KBImportWorkflow:
 
 
 if __name__ == "__main__":
+    configure_utf8_console()
+
     # 启用日志
     setup_logging()
 
     workflow = KBImportWorkflow()
     init_state={
-        "import_file_path": r"E:\H3C.pdf"
+        "import_file_path": r"E:\华为擎云B530.pdf"
     }
     for event in workflow.run(init_state, stream=True):
-        print(f"state: {event}")
+        print(f"state updated: keys={list(event.keys())}")
 
     # final_state = workflow.run(init_state, stream=False)
     # print(json.dumps(final_state,ensure_ascii=False, indent=4))

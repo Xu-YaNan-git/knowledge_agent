@@ -1,5 +1,6 @@
 import json
 import logging
+from pathlib import Path
 from typing import List, Dict
 
 from processor.import_processor.base import BaseNode, setup_logging
@@ -32,9 +33,17 @@ class NodeBGEEmbedding(BaseNode):
 
         # 步骤1：输入数据校验
         chunks = self._step_1_validate_input(state)
+        md_path = state.get("md_path")
+        file_title = state.get("file_title")
+        if not md_path:
+            raise StateFieldError(field_name="md_path", expected_type=str)
+        if not file_title:
+            raise StateFieldError(field_name="file_title", expected_type=str)
+
+        backup_path = Path(md_path).parent / f"{file_title}_new_chunks.json"
 
         # 步骤2：批量生成双向量，为切片绑定向量字段
-        output_data = self._step_2_generate_embeddings(chunks)
+        output_data = self._step_2_generate_embeddings(chunks, backup_path)
 
         # 步骤3：更新全局状态，将带向量的chunks回传下游
         state['chunks'] = output_data
@@ -66,7 +75,11 @@ class NodeBGEEmbedding(BaseNode):
 
 
 
-    def _step_2_generate_embeddings(self, chunks: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def _step_2_generate_embeddings(
+            self,
+            chunks: List[Dict[str, str]],
+            backup_path: Path
+    ) -> List[Dict[str, str]]:
 
         """
         步骤 2: 批量生成向量（核心业务逻辑）
@@ -101,7 +114,6 @@ class NodeBGEEmbedding(BaseNode):
                 item["sparse_vector"] = docs_embeddings["sparse"][j]
                 output_data.append(item)
 
-            backup_path = "E:\output\H3C\H3C_new_new_new_chunks.json"
             with open(backup_path, "w", encoding="utf-8") as f:
                 json.dump(
                     output_data,

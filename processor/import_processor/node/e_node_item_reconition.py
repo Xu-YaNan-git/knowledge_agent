@@ -1,6 +1,7 @@
 import json
 from distutils.command import check
 from email import message
+from pathlib import Path
 from typing import Tuple, List, Dict
 
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -70,7 +71,7 @@ class NodeItemNameRecognition(BaseNode):
 
         # 步骤4：回填商品名称到状态和切片
         self._step_4_update_chunks(state, chunks, item_name)
-        backup_path ="E:\output\H3C\H3C_new_new_chunks.json"
+        backup_path = Path(state.get("md_path")).parent/f"{state.get('file_title')}_new_chunks.json"
         with open(backup_path, "w", encoding="utf-8") as f:
             json.dump(
                 chunks,

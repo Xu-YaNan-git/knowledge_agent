@@ -1,8 +1,8 @@
 import json
-from typing import Tuple, Dict, List
+import sys
+from typing import Any, Tuple, Dict, List
 
 from langchain_core.messages import SystemMessage, HumanMessage
-from torch.distributed.debug._frontend import format_json
 
 from config.milvus_config import milvus_config
 from processor.query_processor.base import NodeBase
@@ -14,6 +14,51 @@ from utils.embedding_utils import generate_embeddings
 from utils.llm_utils import get_llm_client
 from utils.milvus_utils import create_hybrid_search_requests, hybrid_search, get_milvus_client
 from utils.mongo_history_utils import get_recent_messages, save_chat_message, update_message_item_names
+
+
+def _configure_utf8_console() -> None:
+    """确保脚本在 Windows 控制台中可以正常输出中文。"""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def _extract_response_text(content: Any) -> str:
+    """兼容 LangChain 返回的纯文本或内容块列表。"""
+    if isinstance(content, str):
+        text = content.strip()
+    elif isinstance(content, list):
+        text_parts: List[str] = []
+        for block in content:
+            if isinstance(block, str):
+                text_parts.append(block)
+                continue
+
+            if isinstance(block, dict):
+                block_text = block.get("text")
+            else:
+                block_text = getattr(block, "text", None)
+
+            if isinstance(block_text, str):
+                text_parts.append(block_text)
+
+        text = "".join(text_parts).strip()
+    else:
+        raise TypeError(f"不支持的大模型响应类型: {type(content).__name__}")
+
+    if not text:
+        raise ValueError("大模型响应中没有可解析的文本")
+    return text
+
+
+def _strip_json_code_fence(content: str) -> str:
+    """去除大模型可能添加的 Markdown JSON 代码块。"""
+    lines = content.strip().splitlines()
+    if lines and lines[0].strip().lower() in {"```json", "```"}:
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
 
 
 class NodeItemNameConfirm(NodeBase):
@@ -123,19 +168,21 @@ class NodeItemNameConfirm(NodeBase):
 
             # 5. 调用LLM客户端，发起请求获取结果
             response = chat_model.invoke(messages)
-            content = response.content
+            content = _extract_response_text(response.content)
 
             # 6. 数据清洗：处理LLM可能返回的代码块格式（如```json ... ```），去除包裹符
-            if content.startswith("```json"):
-                content = content.replace("```json", "").replace("```", "")
+            content = _strip_json_code_fence(content)
 
             # 7. 数据解析：将JSON字符串转为字典
             result = json.loads(content)
+            if not isinstance(result, dict):
+                raise ValueError("大模型响应的 JSON 顶层必须是对象")
 
             # 8. 健壮性处理：确保字段存在
             # 确保返回结果包含item_names字段，无则设为空列表
-            if "item_names" not in result:
-                result["item_names"] = []
+            item_names = result.get("item_names", [])
+            if not isinstance(item_names, list):
+                raise ValueError("大模型响应中的 item_names 必须是列表")
             # 确保返回结果包含rewritten_query字段，无则复用原始查询
             if "rewritten_query" not in result:
                 result["rewritten_query"] = query
@@ -143,15 +190,16 @@ class NodeItemNameConfirm(NodeBase):
             # 9. 给item_names 去除空格
             result["item_names"] = [
                 name.replace(" ", "").replace("\n", "").replace("\t", "").replace("\r", "")
-                for name in result["item_names"]
+                for name in item_names
+                if isinstance(name, str) and name.strip()
             ]
 
             # 10、返回解析后的提取结果
             return result
 
-        except Exception as e:
+        except Exception:
             # 捕获所有异常（如LLM调用失败、JSON解析失败等），记录错误日志
-            logger.error(f"大模型调用异常：{e}")
+            logger.exception("大模型调用或响应解析异常")
             # 异常时返回默认结果：空商品名列表+原始查询
             return {"item_names": [], "rewritten_query": query}
 
@@ -411,12 +459,14 @@ class NodeItemNameConfirm(NodeBase):
 
 
 if __name__ == "__main__":
+    _configure_utf8_console()
 
     # 初始化图状态
     # "HAK 180 烫金机怎么用？"
     # "怎么用呢？"
     init_state = {
-        "original_query": "H3C怎么用？？"
+        "original_query": "哥们儿，华为擎云B530台式计算机怎么样？",
+        "session_id":"132"
     }
 
     # 创建节点对象
@@ -426,4 +476,4 @@ if __name__ == "__main__":
     # 将返回的图状态进行json序列化
     # json_state = json.dumps(result, ensure_ascii=False, indent=4)
     # 输出
-    logger.info(format_json(result))
+    logger.info(json.dumps(result, ensure_ascii=False, indent=2, default=str))

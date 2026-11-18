@@ -1,7 +1,7 @@
 from pymilvus import MilvusClient, WeightedRanker, AnnSearchRequest
 
 from config.milvus_config import milvus_config
-from tool import logger
+from tool.logger import logger
 
 _milvus_client = None
 def get_milvus_client():

@@ -13,6 +13,7 @@ dependencies = [
     "langgraph>=1.2.19",
     "minio>=7.2.20",
     "numpy>=2.4.6",
+    "openai-agents>=0.25.0",
     "pymongo>=4.19.0",
     "python-dotenv>=1.2.4",
 ]

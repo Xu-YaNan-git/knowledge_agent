@@ -1,34 +1,28 @@
 import asyncio
-import os
+import json
+import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlparse
 
-from agents import Agent, ModelSettings, RunConfig, Runner, WebSearchTool
-from agents.models.openai_provider import OpenAIProvider
+from agents import Runner, RunConfig
+from agents.exceptions import ModelTimeoutError
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+load_dotenv(PROJECT_ROOT / ".env")
 
 from processor.query_processor.base import NodeBase
 from processor.query_processor.state import QueryGraphState
 from tool.logger import logger
+from utils import web_search_utils
+from utils.web_search_utils import WebSearchDocument, WebSearchOutput
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-load_dotenv(PROJECT_ROOT / ".env")
-
-
-class WebSearchDocument(BaseModel):
-    """GPT 联网搜索返回的单条网页文档。"""
-
-    title: str = ""
-    url: str = ""
-    snippet: str = ""
-
-
-class WebSearchOutput(BaseModel):
-    """约束 GPT 将联网搜索结果输出为稳定结构。"""
-
-    documents: list[WebSearchDocument] = Field(default_factory=list)
+MAX_WEB_SEARCH_DOCUMENTS = 5
 
 
 class NodeWebSearchMcp(NodeBase):
@@ -42,91 +36,97 @@ class NodeWebSearchMcp(NodeBase):
             logger.warning("GPT 联网搜索跳过：查询内容为空")
             return {"web_search_docs": []}
 
+        started_at = time.perf_counter()
         try:
-            documents = self._run_async(self._web_search(query.strip()))
-            docs = [document.model_dump() for document in documents]
-            logger.info(f"GPT 联网搜索完成，共返回 {len(docs)} 条文档")
+            documents = self._run_async(self._web_search, query.strip())
+            docs = [document.model_dump() for document in self._normalize_documents(documents)]
+            logger.info(
+                "GPT联网搜索完成，document_count=%d，duration_ms=%d",
+                len(docs),
+                int((time.perf_counter() - started_at) * 1000),
+            )
             return {"web_search_docs": docs}
-        except Exception as exc:
-            logger.exception(f"GPT 联网搜索失败: {exc}")
+        except ModelTimeoutError:
+            logger.warning(
+                "GPT联网搜索超时，已降级为空结果，duration_ms=%d",
+                int((time.perf_counter() - started_at) * 1000),
+            )
+            return {"web_search_docs": []}
+        except Exception:
+            # 联网搜索是并行增强分支，失败时返回空结果，让本地知识库链路继续执行。
+            logger.exception(
+                "GPT联网搜索失败，已降级为空结果，duration_ms=%d",
+                int((time.perf_counter() - started_at) * 1000),
+            )
             return {"web_search_docs": []}
 
     @staticmethod
-    def _run_async(coroutine):
+    def _run_async(async_callable, *args):
         """兼容普通同步调用以及已有事件循环的运行环境。"""
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(coroutine)
+            return asyncio.run(async_callable(*args))
 
         with ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(asyncio.run, coroutine).result()
+            return executor.submit(lambda: asyncio.run(async_callable(*args))).result()
+
+    @staticmethod
+    def _normalize_documents(documents: list[WebSearchDocument]) -> list[WebSearchDocument]:
+        """过滤无效 URL、空摘要和重复网页，限制下游上下文规模。"""
+        normalized: list[WebSearchDocument] = []
+        seen_urls: set[str] = set()
+        for document in documents:
+            url = document.url.strip()
+            snippet = document.snippet.strip()
+            parsed_url = urlparse(url)
+            if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc or not snippet:
+                continue
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            normalized.append(
+                WebSearchDocument(
+                    title=document.title.strip() or parsed_url.netloc,
+                    url=url,
+                    snippet=snippet,
+                )
+            )
+            if len(normalized) >= MAX_WEB_SEARCH_DOCUMENTS:
+                break
+        return normalized
 
     async def _web_search(self, query: str) -> list[WebSearchDocument]:
-        model = (
-            os.getenv("WEB_SEARCH_MODEL")
-            or os.getenv("LLM_DEFAULT_MODEL")
-            or "gpt-5.4-mini"
-        ).strip()
 
-        openai_api_key = (
-            os.getenv("WEB_SEARCH_OPENAI_API_KEY")
-            or os.getenv("OPENAI_API_KEY")
-            or ""
-        ).strip()
-        if not openai_api_key:
-            raise ValueError("缺少 GPT Key：请配置 OPENAI_API_KEY")
-
-        openai_base_url = (
-            os.getenv("WEB_SEARCH_OPENAI_BASE_URL")
-            or os.getenv("OPENAI_API_BASE")
-            or os.getenv("OPENAI_BASE_URL")
-            or "https://api.openai.com/v1"
-        ).strip()
-
-        agent = Agent(
-            name="GPT Web Search Agent",
-            model=model,
-            instructions=(
-                "必须先调用联网搜索工具检索用户问题。"
-                "只根据搜索结果生成 documents；每条包含 title、url、snippet，"
-                "不要编造网址，没有有效结果时返回空列表。"
-            ),
-            tools=[
-                WebSearchTool(
-                    search_context_size="medium",
-                    external_web_access=True,
-                )
-            ],
-            model_settings=ModelSettings(tool_choice="required"),
-            output_type=WebSearchOutput,
-        )
-
-        provider = OpenAIProvider(
-            api_key=openai_api_key,
-            base_url=openai_base_url,
-            use_responses=True,
-        )
+        agent = web_search_utils.get_web_search_client()
         result = await Runner.run(
             agent,
             query,
+            max_turns=3,
             run_config=RunConfig(
-                model_provider=provider,
+                model_provider=web_search_utils.get_model_provider(),
                 tracing_disabled=True,
+                trace_include_sensitive_data=False,
             ),
         )
 
         output = result.final_output
         if isinstance(output, WebSearchOutput):
             return output.documents
+        if isinstance(output, str):
+            return WebSearchOutput.model_validate(json.loads(output)).documents
         return WebSearchOutput.model_validate(output).documents
 
 
 if __name__ == "__main__":
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     node = NodeWebSearchMcp()
     result = node(
         {
             "rewritten_query": "搜索华为擎云 B530 台式计算机的官方产品信息"
         }
     )
-    print(result)
+    print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)

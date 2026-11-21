@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="RAG Knowledge Base 可视化问答与资料管理控制台">
+  <title>Knowledge Base · 智识台</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Knowledge Base 首页">
+        <span class="brand-mark" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </span>
+        <span><strong>Knowledge</strong><small>智识工作台</small></span>
+      </a>
+
+      <button class="new-chat-button" id="newChatButton" type="button">
+        <span class="button-icon">＋</span> 新建会话
+      </button>
+
+      <nav class="side-nav" aria-label="主要导航">
+        <button class="nav-item active" data-view="chat" type="button">
+          <span class="nav-icon">◫</span><span>智能问答</span>
+        </button>
+        <button class="nav-item" data-view="library" type="button">
+          <span class="nav-icon">◇</span><span>知识入库</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-section">
+        <div class="section-heading"><span>当前会话</span><button id="clearHistoryButton" type="button">清空</button></div>
+        <div class="session-card">
+          <span class="session-orb"></span>
+          <div><strong>知识库问答</strong><small id="sessionLabel">新会话</small></div>
+        </div>
+      </div>
+
+      <div class="system-card">
+        <div class="system-card-head"><span>系统状态</span><span class="status-badge" id="systemBadge">检测中</span></div>
+        <div class="status-row"><span>MongoDB</span><b>会话记忆</b></div>
+        <div class="status-row"><span>Milvus</span><b>混合检索</b></div>
+        <div class="status-row"><span>BGE-M3</span><b>本地向量</b></div>
+      </div>
+
+      <div class="sidebar-footer">
+        <span class="avatar">KB</span>
+        <span><strong>本地工作区</strong><small>Python 3.11 · FastAPI</small></span>
+      </div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <button class="mobile-menu" id="mobileMenuButton" type="button" aria-label="打开菜单">☰</button>
+        <div>
+          <p class="eyebrow">RAG KNOWLEDGE ASSISTANT</p>
+          <h1 id="viewTitle">智能问答</h1>
+        </div>
+        <div class="topbar-actions">
+          <span class="online-pill"><i></i> 服务在线</span>
+          <button class="upload-shortcut" id="uploadShortcut" type="button">导入资料</button>
+        </div>
+      </header>
+
+      <section class="chat-view view active" id="chatView">
+        <div class="chat-column">
+          <div class="hero" id="chatHero">
+            <div class="hero-symbol" aria-hidden="true"><span>✦</span></div>
+            <p class="eyebrow">KNOWLEDGE, CONNECTED</p>
+            <h2>让知识，从检索走向答案。</h2>
+            <p>融合本地文档、向量检索与实时网络信息，为每一个结论提供可追溯的依据。</p>
+            <div class="suggestions" aria-label="示例问题">
+              <button type="button" data-question="华为擎云 B530 台式计算机有哪些主要配置？">B530 有哪些主要配置？</button>
+              <button type="button" data-question="如何使用万用表检测主板是否短路？">如何检测主板短路？</button>
+              <button type="button" data-question="请总结知识库中产品的安全使用注意事项。">总结安全注意事项</button>
+            </div>
+          </div>
+
+          <div class="conversation" id="conversation" aria-live="polite"></div>
+
+          <div class="composer-wrap">
+            <form class="composer" id="questionForm">
+              <textarea id="questionInput" rows="1" maxlength="2000" placeholder="输入你的问题，Enter 发送，Shift + Enter 换行" aria-label="输入问题"></textarea>
+              <div class="composer-actions">
+                <span class="context-hint"><i></i> 将检索本地知识库与网络资料</span>
+                <button class="send-button" id="sendButton" type="submit" aria-label="发送问题"><span>发送</span><b>↵</b></button>
+              </div>
+            </form>
+            <p class="composer-note">答案由模型生成，请结合引用资料核验重要信息。</p>
+          </div>
+        </div>
+
+        <aside class="inspector">
+          <div class="inspector-head">
+            <div><p class="eyebrow">LIVE TRACE</p><h2>推理轨迹</h2></div>
+            <span class="trace-state" id="traceState">等待提问</span>
+          </div>
+          <div class="pipeline" id="pipeline"></div>
+          <div class="metric-grid">
+            <div><span>执行耗时</span><strong id="durationMetric">—</strong></div>
+            <div><span>参考资料</span><strong id="sourceMetric">—</strong></div>
+          </div>
+          <div class="inspector-note">
+            <span>i</span><p>节点状态来自真实 LangGraph 执行过程，网络搜索失败时会自动降级到本地资料。</p>
+          </div>
+        </aside>
+      </section>
+
+      <section class="library-view view" id="libraryView">
+        <div class="library-intro">
+          <div><p class="eyebrow">KNOWLEDGE INGESTION</p><h2>构建你的知识底座</h2></div>
+          <p>上传 PDF 或 Markdown，系统将自动解析图片、切分语义块、识别产品主体并写入 Milvus。</p>
+        </div>
+
+        <div class="library-grid">
+          <section class="upload-card">
+            <form id="uploadForm">
+              <label class="drop-zone" id="dropZone" for="fileInput">
+                <input id="fileInput" type="file" accept=".pdf,.md" hidden>
+                <span class="drop-icon">⇧</span>
+                <strong>拖放资料到这里</strong>
+                <p>或点击选择本地文件</p>
+                <small>支持 PDF、Markdown · 最大 50 MB</small>
+              </label>
+              <div class="selected-file" id="selectedFile" hidden>
+                <span class="file-type">DOC</span>
+                <div><strong id="selectedFileName"></strong><small id="selectedFileSize"></small></div>
+                <button type="button" id="removeFileButton">移除</button>
+              </div>
+              <button class="primary-button" id="startImportButton" type="submit" disabled>开始构建知识</button>
+            </form>
+          </section>
+
+          <section class="import-progress-card">
+            <div class="card-heading"><div><p class="eyebrow">PROCESS</p><h3>处理流程</h3></div><span id="importState">尚未开始</span></div>
+            <div class="import-pipeline" id="importPipeline"></div>
+            <div class="import-result" id="importResult" hidden></div>
+          </section>
+        </div>
+
+        <div class="feature-strip">
+          <article><span>01</span><div><strong>多模态解析</strong><p>保留文档结构与图片语义</p></div></article>
+          <article><span>02</span><div><strong>语义切分</strong><p>按标题与上下文生成高质量切片</p></div></article>
+          <article><span>03</span><div><strong>混合向量</strong><p>BGE-M3 稠密与稀疏向量联合检索</p></div></article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast-region" id="toastRegion" aria-live="assertive"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

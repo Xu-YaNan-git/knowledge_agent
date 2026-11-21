@@ -16,5 +16,7 @@ dependencies = [
     "numpy>=2.4.6",
     "openai-agents>=0.25.0",
     "pymongo>=4.19.0",
+    "python-multipart>=0.0.20",
     "python-dotenv>=1.2.4",
+    "uvicorn[standard]>=0.40.0",
 ]

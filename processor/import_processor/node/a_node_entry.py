@@ -39,6 +39,7 @@ class NodeEntry(BaseNode):
             raise FileProcessingError(message=f"不支持的文件格式: #{import_file_path}")
 
         state["file_title"] = import_file_path_obj.stem
-        state["file_dir"]=r"E:\output"
+        # API 调用方会为每个任务提供隔离目录；命令行旧用法仍保留本地默认目录。
+        state["file_dir"] = state.get("file_dir") or str(import_file_path_obj.parent / "output")
 
         return state

@@ -171,3 +171,16 @@ knowledge/
 """
 扫描后的图片：List[Tuple[str,str,Tuple[str,str]]]
 扫描后的图片：list[(图片名，图片路径,(图片上文，图片下文))]
+
+
+"""
+    可视化控制台
+"""
+# 在项目根目录启动，浏览器访问 http://127.0.0.1:8000
+\.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8000
+
+# 页面功能：
+# 1. 智能问答与会话历史
+# 2. LangGraph 节点执行轨迹
+# 3. 精排资料、引用和图片展示
+# 4. PDF / Markdown 知识入库

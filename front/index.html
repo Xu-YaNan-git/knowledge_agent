@@ -36,6 +36,8 @@
           <span class="session-orb"></span>
           <div><strong>知识库问答</strong><small id="sessionLabel">新会话</small></div>
         </div>
+        <div class="section-heading session-history-heading"><span>最近会话</span><button id="refreshSessionsButton" type="button">刷新</button></div>
+        <div class="session-list" id="sessionList"><small>暂无会话</small></div>
       </div>
 
       <div class="system-card">
@@ -43,11 +45,13 @@
         <div class="status-row"><span>MongoDB</span><b>会话记忆</b></div>
         <div class="status-row"><span>Milvus</span><b>混合检索</b></div>
         <div class="status-row"><span>BGE-M3</span><b>本地向量</b></div>
+        <div class="status-row"><span>问答配额</span><b id="queryQuotaStatus">加载中</b></div>
       </div>
 
       <div class="sidebar-footer">
         <span class="avatar">KB</span>
-        <span><strong>本地工作区</strong><small>Python 3.11 · FastAPI</small></span>
+        <span><strong id="currentUsername">本地工作区</strong><small id="currentUserRole">Python 3.11 · FastAPI</small></span>
+        <button id="logoutButton" type="button" hidden>退出</button>
       </div>
     </aside>
 
@@ -82,9 +86,13 @@
 
           <div class="composer-wrap">
             <form class="composer" id="questionForm">
+              <label class="scope-select">检索范围
+                <select id="queryKnowledgeBase"><option value="">全部知识库</option></select>
+              </label>
               <textarea id="questionInput" rows="1" maxlength="2000" placeholder="输入你的问题，Enter 发送，Shift + Enter 换行" aria-label="输入问题"></textarea>
               <div class="composer-actions">
                 <span class="context-hint"><i></i> 将检索本地知识库与网络资料</span>
+                <button class="stop-button" id="stopButton" type="button" hidden>停止</button>
                 <button class="send-button" id="sendButton" type="submit" aria-label="发送问题"><span>发送</span><b>↵</b></button>
               </div>
             </form>
@@ -113,6 +121,19 @@
           <div><p class="eyebrow">KNOWLEDGE INGESTION</p><h2>构建你的知识底座</h2></div>
           <p>上传 PDF 或 Markdown，系统将自动解析图片、切分语义块、识别产品主体并写入 Milvus。</p>
         </div>
+
+        <section class="management-card">
+          <div class="card-heading"><div><p class="eyebrow">KNOWLEDGE BASES</p><h3>知识库管理</h3></div></div>
+          <form id="knowledgeBaseForm" class="inline-form">
+            <input id="knowledgeBaseName" maxlength="100" placeholder="新知识库名称" required>
+            <input id="knowledgeBaseDescription" maxlength="1000" placeholder="说明（可选）">
+            <button class="primary-button" type="submit">创建知识库</button>
+          </form>
+          <div class="knowledge-toolbar">
+            <label>当前知识库 <select id="knowledgeBaseSelect"></select></label>
+            <span><button id="exportKnowledgeBaseButton" type="button">导出 ZIP</button><button id="refreshDocumentsButton" type="button">刷新文档</button></span>
+          </div>
+        </section>
 
         <div class="library-grid">
           <section class="upload-card">
@@ -145,11 +166,79 @@
           <article><span>02</span><div><strong>语义切分</strong><p>按标题与上下文生成高质量切片</p></div></article>
           <article><span>03</span><div><strong>混合向量</strong><p>BGE-M3 稠密与稀疏向量联合检索</p></div></article>
         </div>
+
+        <section class="management-card">
+          <div class="card-heading"><div><p class="eyebrow">DOCUMENTS</p><h3>文档与版本</h3></div><span id="documentCount">0 个文档</span></div>
+          <div id="documentList" class="document-list"><p class="empty-hint">请选择或创建知识库。</p></div>
+        </section>
+
+        <section class="management-card" id="operationsSection">
+          <div class="card-heading"><div><p class="eyebrow">OPERATIONS</p><h3>运行状态</h3></div><button id="refreshOperationsButton" type="button">刷新</button></div>
+          <div class="operations-metrics" id="operationsMetrics"></div>
+          <div class="task-list" id="taskList"><p class="empty-hint">暂无任务记录。</p></div>
+        </section>
+
+        <section class="management-card" id="userManagementSection" hidden>
+          <div class="card-heading"><div><p class="eyebrow">ACCESS CONTROL</p><h3>账号与权限</h3></div><button id="refreshUsersButton" type="button">刷新</button></div>
+          <form id="userForm" class="inline-form">
+            <input id="newUsername" maxlength="64" placeholder="用户名" required>
+            <input id="newUserPassword" type="password" minlength="10" maxlength="256" placeholder="初始密码（至少 10 位）" required>
+            <select id="newUserRole"><option value="viewer">只读用户</option><option value="editor">编辑者</option><option value="admin">管理员</option></select>
+            <button class="primary-button" type="submit">创建账号</button>
+          </form>
+          <div class="user-list" id="userList"><p class="empty-hint">暂无账号。</p></div>
+        </section>
+
+        <section class="management-card" id="auditSection" hidden>
+          <div class="card-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h3>安全审计日志</h3></div><button id="refreshAuditButton" type="button">刷新</button></div>
+          <div class="audit-toolbar">
+            <select id="auditActionFilter" aria-label="按操作筛选">
+              <option value="">全部操作</option>
+              <option value="auth.login">账号登录</option>
+              <option value="user.create">创建账号</option>
+              <option value="user.update">更新账号</option>
+              <option value="knowledge_base.create">创建知识库</option>
+              <option value="knowledge_base.update">更新知识库</option>
+              <option value="knowledge_base.delete">删除知识库</option>
+              <option value="document.import">文档入库</option>
+              <option value="document.delete">删除文档</option>
+              <option value="task.cancel">取消任务</option>
+            </select>
+            <select id="auditOutcomeFilter" aria-label="按结果筛选">
+              <option value="">全部结果</option><option value="success">成功</option><option value="failure">失败</option><option value="denied">拒绝</option>
+            </select>
+            <span id="auditTotal">0 条记录</span>
+          </div>
+          <div class="audit-list" id="auditList"><p class="empty-hint">暂无审计记录。</p></div>
+        </section>
+
+        <section class="management-card" id="evaluationSection">
+          <div class="card-heading"><div><p class="eyebrow">EVALUATION</p><h3>RAG 效果评测</h3></div><span id="evaluationState">尚未运行</span></div>
+          <form id="evaluationForm" class="inline-form">
+            <input id="evaluationFile" type="file" accept=".jsonl" required>
+            <button class="primary-button" type="submit">运行评测</button>
+          </form>
+          <p class="composer-note">JSONL 每行包含 question、expected_keywords，可选 knowledge_base_ids。</p>
+          <div id="evaluationResult" class="import-result" hidden></div>
+          <div class="evaluation-history" id="evaluationHistory"><p class="empty-hint">暂无评测记录。</p></div>
+        </section>
       </section>
     </main>
   </div>
 
   <div class="toast-region" id="toastRegion" aria-live="assertive"></div>
+  <div class="auth-overlay" id="authOverlay" hidden>
+    <form class="auth-card" id="loginForm">
+      <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+      <p class="eyebrow">SECURE ACCESS</p>
+      <h2>登录智识工作台</h2>
+      <p>使用管理员分配的账号继续访问知识库。</p>
+      <label>用户名<input id="loginUsername" autocomplete="username" maxlength="64" required></label>
+      <label>密码<input id="loginPassword" type="password" autocomplete="current-password" maxlength="256" required></label>
+      <button class="primary-button" id="loginButton" type="submit">登录</button>
+      <small id="loginError" role="alert"></small>
+    </form>
+  </div>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

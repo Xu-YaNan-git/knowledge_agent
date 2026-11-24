@@ -63,8 +63,12 @@ class NodeRerank(NodeBase):
 
             format_rrf_doc = {
                 "content": rrf_doc.get('content'),
-                "title": rrf_doc.get('title'),
+                "title": rrf_doc.get('title') or rrf_doc.get('parent_title') or rrf_doc.get('file_title'),
                 "chunk_id": rrf_doc.get('chunk_id'),
+                "document_id": rrf_doc.get('document_id'),
+                "knowledge_base_id": rrf_doc.get('knowledge_base_id'),
+                "file_title": rrf_doc.get('file_title'),
+                "parent_title": rrf_doc.get('parent_title'),
                 "url": None,
                 "source": "local"
             }

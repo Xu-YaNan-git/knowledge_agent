@@ -40,7 +40,9 @@ class NodeMDImg(BaseNode):
         summaries = self._step_3_generate_summaries(md_path_obj.stem, target_images)
 
         #4.上传minio，替换md
-        new_md_content = self._step_4_upload_and_replace(md_path_obj.stem, target_images, summaries, md_content)
+        # 新版本使用 document_id 隔离对象目录，避免更新失败时覆盖线上旧版本图片。
+        storage_key = state.get("document_id") or md_path_obj.stem
+        new_md_content = self._step_4_upload_and_replace(storage_key, target_images, summaries, md_content)
 
         #5.保存备份md
         new_md_file_name = self._step_5_backup_new_md_file(state['md_path'], new_md_content)
@@ -73,7 +75,9 @@ class NodeMDImg(BaseNode):
 
         # 4、获取md_content
         md_content = state.get("md_content")
-        if md_content is None:
+        # 默认图状态使用空字符串表示“尚未读取”。Markdown 上传任务因此也必须
+        # 在空字符串时回读源文件，否则后续切分节点会把正常文件判定为空文档。
+        if md_content is None or md_content == "":
             md_content = md_path_obj.read_text(encoding="utf-8")
         elif not isinstance(md_content, str):
             raise StateFieldError(field_name="md_content", expected_type=str)
@@ -95,6 +99,11 @@ class NodeMDImg(BaseNode):
 
         # 1. 定义待处理图片列表
         target_images = []
+
+        # 纯文本 Markdown 不要求存在 images 目录；没有图片时直接进入后续切分流程。
+        if not images_dir.is_dir():
+            self.logger.info("Markdown 未包含本地图片目录，跳过图片处理：%s", images_dir)
+            return target_images
 
         # 2. 遍历图片文件夹
         for image_file in os.listdir(images_dir):

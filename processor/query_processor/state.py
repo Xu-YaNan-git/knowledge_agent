@@ -7,6 +7,7 @@ class QueryGraphState(TypedDict):
     """
 
     session_id: str  # 会话ID
+    knowledge_base_ids: List[str]  # 限定检索的知识库；空列表表示兼容旧数据的全库检索
     message_id: str  # 消息ID
 
     original_query: str  # 用户原始问题

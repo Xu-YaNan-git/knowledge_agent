@@ -7,7 +7,7 @@ from processor.query_processor.state import QueryGraphState
 from tool.logger import logger
 from utils.embedding_utils import generate_embeddings
 from utils.llm_utils import get_llm_client
-from utils.milvus_utils import create_hybrid_search_requests, get_milvus_client, hybrid_search
+from utils.milvus_utils import build_metadata_filter, create_hybrid_search_requests, get_milvus_client, hybrid_search
 
 
 class NodeSearchEmbeddingHyde(NodeBase):
@@ -39,6 +39,7 @@ class NodeSearchEmbeddingHyde(NodeBase):
         # 1、用户问题和已确认商品名
         rewritten_query = state.get("rewritten_query")
         item_names = state.get("item_names")
+        knowledge_base_ids = state.get("knowledge_base_ids")
 
         try:
             if not isinstance(rewritten_query, str) or not rewritten_query.strip():
@@ -53,7 +54,8 @@ class NodeSearchEmbeddingHyde(NodeBase):
             res = self._step_2_search_embedding_hyde(
                 rewritten_query=rewritten_query,
                 hyde_doc=hyde_doc,
-                item_names=item_names
+                item_names=item_names,
+                knowledge_base_ids=knowledge_base_ids,
             )
 
             # 4、结果封装
@@ -96,7 +98,8 @@ class NodeSearchEmbeddingHyde(NodeBase):
             self,
             rewritten_query: str,
             hyde_doc: str,
-            item_names=None
+            item_names=None,
+            knowledge_base_ids=None,
     ):
         """
         阶段2：利用“重写问题 + 假设性文档”生成 embedding，并到向量库检索切片。
@@ -123,19 +126,8 @@ class NodeSearchEmbeddingHyde(NodeBase):
             collection_name = milvus_config.chunks_collection
 
             # 4、处理 item_names 中的引号，防止注入或语法错误
-            expr = None
-            if item_names:
-                valid_item_names = [
-                    name.strip() for name in item_names
-                    if isinstance(name, str) and name.strip()
-                ]
-                if valid_item_names:
-                    expr = f"item_name in {json.dumps(valid_item_names, ensure_ascii=False)}"
-                    logger.info(f"步骤2: 过滤条件: {expr}")
-                else:
-                    logger.info("步骤2: 商品名过滤值无效，将全库检索")
-            else:
-                logger.info("步骤2: 未指定商品名过滤，将全库检索")
+            expr = build_metadata_filter(item_names, knowledge_base_ids)
+            logger.info("HyDE 检索范围已构建，has_filter=%s", bool(expr))
 
             # 5、构造Milvus混合搜索请求对象
             reqs = create_hybrid_search_requests(
@@ -153,7 +145,7 @@ class NodeSearchEmbeddingHyde(NodeBase):
                 collection_name=collection_name,
                 reqs=reqs,
                 ranker_weights=(0.8, 0.2),
-                output_fields=["chunk_id", "content", "item_name"],
+                output_fields=["chunk_id", "content", "title", "parent_title", "item_name", "file_title", "document_id", "knowledge_base_id"],
             )
 
             return res[0] if res else []

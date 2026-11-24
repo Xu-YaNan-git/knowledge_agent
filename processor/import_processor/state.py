@@ -29,6 +29,10 @@ class ImportGraphState(TypedDict, total=False):
     # ==================== 任务标识 ====================
 
     task_id: str  # 任务 ID，用于任务追踪(web交互的时候用到，实时看到节点的处理日志)
+    knowledge_base_id: str  # 所属知识库
+    document_id: str  # 当前文档版本 ID
+    previous_document_id: str  # 上一个已生效版本，用于安全切换
+    version: int  # 文档版本号
 
     # ==================== 控制标志 ====================
 
@@ -66,6 +70,10 @@ class ImportGraphState(TypedDict, total=False):
 GRAPH_DEFAULT_STATE: ImportGraphState = {
 
     "task_id": "",
+    "knowledge_base_id": "",
+    "document_id": "",
+    "previous_document_id": "",
+    "version": 1,
 
     "is_pdf_read_enabled": False,
 

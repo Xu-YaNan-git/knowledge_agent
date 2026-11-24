@@ -1,9 +1,23 @@
+import json
+
 from pymilvus import MilvusClient, WeightedRanker, AnnSearchRequest
 
 from config.milvus_config import milvus_config
 from tool.logger import logger
 
 _milvus_client = None
+
+
+def build_metadata_filter(item_names=None, knowledge_base_ids=None):
+    """Build an escaped Milvus filter for optional product and knowledge-base scopes."""
+    conditions = []
+    valid_item_names = [value.strip() for value in (item_names or []) if isinstance(value, str) and value.strip()]
+    valid_kb_ids = [value.strip() for value in (knowledge_base_ids or []) if isinstance(value, str) and value.strip()]
+    if valid_item_names:
+        conditions.append(f"item_name in {json.dumps(valid_item_names, ensure_ascii=False)}")
+    if valid_kb_ids:
+        conditions.append(f"knowledge_base_id in {json.dumps(valid_kb_ids, ensure_ascii=False)}")
+    return " and ".join(conditions) or None
 def get_milvus_client():
     """
     获取全局单例的MilvusClient对象

@@ -10,6 +10,8 @@ try:
     # secure=False 是否启用HTTPS加密连接；False=用HTTP，True=用HTTPS；本地/内网部署一律写False
     if not minio_client.bucket_exists(minio_config.bucket_name):
         minio_client.make_bucket(minio_config.bucket_name)
+    if not minio_client.bucket_exists(minio_config.document_bucket_name):
+        minio_client.make_bucket(minio_config.document_bucket_name)
     # 设置存储桶策略为 Public Read (只读权限开放给匿名用户)
     # 这样前端可以直接通过 URL 访问图片，而不需要预签名 URL
     policy = {

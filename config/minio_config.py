@@ -11,6 +11,7 @@ class MinIOConfig:
     access_key: str
     secret_key: str
     bucket_name: str
+    document_bucket_name: str
     img_dir: str
 
 minio_config = MinIOConfig(
@@ -18,5 +19,6 @@ minio_config = MinIOConfig(
     access_key=os.getenv("MINIO_ACCESS_KEY",""),
     secret_key=os.getenv("MINIO_SECRET_KEY",""),
     bucket_name=os.getenv("MINIO_BUCKET_NAME",""),
+    document_bucket_name=os.getenv("MINIO_DOCUMENT_BUCKET_NAME") or f"{os.getenv('MINIO_BUCKET_NAME','')}-documents",
     img_dir=os.getenv("MINIO_IMG_DIR",""),
 )

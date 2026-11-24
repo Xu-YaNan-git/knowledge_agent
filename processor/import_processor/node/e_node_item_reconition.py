@@ -6,7 +6,6 @@ from typing import Tuple, List, Dict
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
-from onnx import SequenceProto
 from pymilvus import DataType
 
 from config.llm_config import llm_config

@@ -408,6 +408,14 @@ class NodeItemNameConfirm(NodeBase):
             # 返回更新后的状态
             return state
 
+        # 调用方已经明确限定知识库时，即使没有高置信度标准商品名，也应继续在
+        # 该知识库内做通用语义检索。下游会使用 knowledge_base_ids 构造安全
+        # 过滤条件，因此无需用中置信度候选打断查询。
+        if state.get("knowledge_base_ids"):
+            state["answer"] = ""
+            state["item_names"] = []
+            return state
+
         # 分支B：无确认商品名，但有候选商品名（中置信度，需用户明确）
         if options:
             # 候选商品名拼接为字符串，格式："商品1、商品2、商品3"

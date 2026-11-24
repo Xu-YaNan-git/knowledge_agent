@@ -25,8 +25,8 @@ class NodeImportMilvus(BaseNode):
         执行流程（串行执行，一步一校验，保证数据一致性）：
             1. 输入校验：验证切片有效性、向量字段完整性，提取向量维度
             2. 环境准备：连接Milvus，集合不存在则自动创建Schema+索引
-            3. 幂等清理：删除同file_title旧数据，避免重复存储
-            4. 批量插入：预处理数据后批量入库，回填Milvus自增chunk_id
+            3. 批量插入：先写入新版本，保证失败时旧版本仍然可用
+            4. 安全切换：新版本成功后再删除上一个版本
             5. 状态更新：将回填了chunk_id的切片更新回全局状态，供下游使用
 
         异常处理：
@@ -45,11 +45,14 @@ class NodeImportMilvus(BaseNode):
         # 步骤2：Milvus客户端连接+集合准备（自动建表）
         client = self._step_2_prepare_collection(vector_dimension)
 
-        # 步骤3：幂等性处理 - 清理同file_title旧数据
-        self._step_3_clean_old_data(client, chunks_json_data)
+        # 为每个切片写入稳定的知识库和文档版本标识。
+        self._step_3_attach_document_metadata(state, chunks_json_data)
 
-        # 步骤4：批量插入数据+主键chunk_id回填
+        # 先插入新版本，失败时不会影响线上旧版本。
         updated_chunks = self._step_4_insert_data(client, chunks_json_data)
+
+        # 新版本完整写入后才清理旧版本，避免“先删后写”造成知识丢失。
+        self._step_5_clean_previous_version(client, state.get("previous_document_id"))
 
         # 步骤5：更新全局状态，将回填后的切片回传下游
         state["chunks"] = updated_chunks
@@ -161,7 +164,19 @@ class NodeImportMilvus(BaseNode):
             index_params=index_params
         )
 
-    def _step_3_clean_old_data(self, client, chunks_json_data):
+    @staticmethod
+    def _step_3_attach_document_metadata(state: Dict[str, Any], chunks_json_data: List[Dict[str, Any]]) -> None:
+        knowledge_base_id = state.get("knowledge_base_id") or ""
+        document_id = state.get("document_id") or ""
+        version = int(state.get("version") or 1)
+        if not knowledge_base_id or not document_id:
+            raise StateFieldError(field_name="document_id", message="知识库和文档版本标识不能为空")
+        for chunk in chunks_json_data:
+            chunk["knowledge_base_id"] = knowledge_base_id
+            chunk["document_id"] = document_id
+            chunk["version"] = version
+
+    def _step_5_clean_previous_version(self, client, previous_document_id: str | None) -> None:
 
         """
         幂等清理
@@ -172,21 +187,16 @@ class NodeImportMilvus(BaseNode):
         """
 
         # 1. 获取查询条件
-        file_title = chunks_json_data[0].get("file_title")
-
-        # 2. 执行幂等清理
-        self._clear_chunks_by_file_title(client, file_title)
-
-    def _clear_chunks_by_file_title(self, client, file_title):
-
+        if not previous_document_id:
+            return
         try:
-            file_title = escape_milvus_string(file_title)
+            escaped_document_id = escape_milvus_string(previous_document_id)
             client.delete(
                 collection_name=milvus_config.chunks_collection,
-                filter=f"file_title=='{file_title}'")
+                filter=f'document_id == "{escaped_document_id}"')
         except Exception as e:
-            self.logger.error(f"Milvus 数据删除失败: {str(e)}")
-            raise MilvusError(f"Milvus 数据删除失败: {str(e)}")
+            # 新版本已经成功写入，此时不回滚，保留旧版本并交给后续清理任务处理。
+            self.logger.warning("旧文档版本清理失败，previous_document_id=%s", previous_document_id, exc_info=True)
 
     def _step_4_insert_data(self, client, chunks_json_data):
         """

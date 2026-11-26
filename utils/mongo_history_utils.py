@@ -3,7 +3,8 @@ import os
 # 导入日志模块：用于记录程序运行日志（成功/失败/错误信息）
 import logging
 # 导入类型注解模块：用于函数参数/返回值的类型提示，提升代码可读性和规范性
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
+from threading import Lock
 # 导入时间模块：用于生成时间戳，记录对话的创建时间
 from datetime import datetime
 # 导入pymongo核心模块：MongoDB原生Python驱动，实现数据库连接和操作
@@ -29,6 +30,7 @@ class HistoryMongoTool:
         类初始化方法：完成MongoDB的连接、数据库/集合获取、索引创建
         初始化失败会抛出异常并记录错误日志，确保程序感知连接问题
         """
+        self.client = None
         try:
             # 从环境变量读取MongoDB连接地址（敏感配置，不硬编码）
             self.mongo_url = os.getenv("MONGO_URL")
@@ -36,7 +38,13 @@ class HistoryMongoTool:
             self.db_name = os.getenv("MONGO_DB_NAME")
 
             # 创建MongoDB客户端实例，建立与数据库的连接
-            self.client = MongoClient(self.mongo_url)
+            timeout_ms = max(1000, int(os.getenv("MONGO_TIMEOUT_MS", "10000")))
+            self.client = MongoClient(
+                self.mongo_url,
+                connectTimeoutMS=timeout_ms,
+                serverSelectionTimeoutMS=timeout_ms,
+                socketTimeoutMS=timeout_ms,
+            )
             # 获取指定名称的数据库对象
             self.db = self.client[self.db_name]
             # 获取对话记录的集合（相当于关系型数据库的表），集合名：chat_message
@@ -52,13 +60,52 @@ class HistoryMongoTool:
         except Exception as e:
             # 捕获所有初始化异常，记录详细错误日志
             logging.error(f"Failed to connect to MongoDB: {e}")
+            if self.client is not None:
+                self.client.close()
             # 重新抛出异常，让调用方感知初始化失败，避免使用未初始化的实例
             raise
 
 
-# 定义全局变量：存储HistoryMongoTool的单例实例
-# 目的：将数据库连接的初始化提前到模块加载阶段，避免第一次调用接口时才建立连接（提升首次响应速度）
-_history_mongo_tool = HistoryMongoTool()
+# HistoryMongoTool 的进程内单例。模块导入时不创建客户端；只有显式初始化或
+# 第一次调用现有读写 API 时才连接 MongoDB。
+_history_mongo_tool: Optional[HistoryMongoTool] = None
+_history_mongo_tool_lock = Lock()
+
+
+def peek_history_mongo_tool() -> Optional[HistoryMongoTool]:
+    """返回已初始化的实例，不触发初始化。"""
+    with _history_mongo_tool_lock:
+        return _history_mongo_tool
+
+
+def initialize_history_mongo_tool(
+        tool_factory: Callable[[], HistoryMongoTool] = HistoryMongoTool
+) -> HistoryMongoTool:
+    """线程安全地初始化并返回单例；初始化失败时不缓存失败结果。"""
+    global _history_mongo_tool
+    with _history_mongo_tool_lock:
+        if _history_mongo_tool is None:
+            tool = tool_factory()
+            _history_mongo_tool = tool
+        return _history_mongo_tool
+
+
+def reset_history_mongo_tool() -> None:
+    """清除已缓存的实例，使后续调用可以重新初始化。"""
+    global _history_mongo_tool
+    with _history_mongo_tool_lock:
+        _history_mongo_tool = None
+
+
+def close_history_mongo_tool() -> None:
+    """关闭已初始化的 MongoDB 客户端；未初始化时安全返回。"""
+    global _history_mongo_tool
+    with _history_mongo_tool_lock:
+        tool = _history_mongo_tool
+        _history_mongo_tool = None
+
+    if tool is not None:
+        tool.client.close()
 
 def get_history_mongo_tool() -> HistoryMongoTool:
     """
@@ -66,13 +113,7 @@ def get_history_mongo_tool() -> HistoryMongoTool:
     核心逻辑：全局实例为空时创建，不为空时直接返回，保证整个程序只有一个数据库连接实例
     :return: HistoryMongoTool的单例实例
     """
-    # 声明使用全局变量，避免函数内视为局部变量
-    global _history_mongo_tool
-    # 懒加载：仅当全局实例为空时，才创建新的实例
-    if _history_mongo_tool is None:
-        _history_mongo_tool = HistoryMongoTool()
-    # 返回单例实例
-    return _history_mongo_tool
+    return initialize_history_mongo_tool()
 
 def clear_history(session_id: str) -> int:
     """

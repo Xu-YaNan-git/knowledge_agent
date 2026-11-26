@@ -25,9 +25,13 @@
         <button class="nav-item active" data-view="chat" type="button">
           <span class="nav-icon">◫</span><span>智能问答</span>
         </button>
-        <button class="nav-item" data-view="library" type="button">
-          <span class="nav-icon">◇</span><span>知识入库</span>
-        </button>
+        <span class="nav-group-label">知识工作区</span>
+        <button class="nav-item" data-view="library" type="button"><span class="nav-icon">▦</span><span>知识库概览</span></button>
+        <button class="nav-item" data-view="import" type="button"><span class="nav-icon">⇧</span><span>资料入库</span></button>
+        <button class="nav-item" data-view="documents" type="button"><span class="nav-icon">▤</span><span>知识管理</span></button>
+        <span class="nav-group-label">质量与安全</span>
+        <button class="nav-item" data-view="evaluation" type="button"><span class="nav-icon">◎</span><span>RAG 效果评测</span></button>
+        <button class="nav-item" data-view="audit" type="button"><span class="nav-icon">◷</span><span>安全审计日志</span></button>
       </nav>
 
       <div class="sidebar-section">
@@ -88,6 +92,7 @@
             <form class="composer" id="questionForm">
               <label class="scope-select">检索范围
                 <select id="queryKnowledgeBase"><option value="">全部知识库</option></select>
+                <button type="button" id="jumpToChunksBtn" class="mini-link" title="查看该知识库的知识内容">查看知识</button>
               </label>
               <textarea id="questionInput" rows="1" maxlength="2000" placeholder="输入你的问题，Enter 发送，Shift + Enter 换行" aria-label="输入问题"></textarea>
               <div class="composer-actions">
@@ -118,9 +123,17 @@
 
       <section class="library-view view" id="libraryView">
         <div class="library-intro">
-          <div><p class="eyebrow">KNOWLEDGE INGESTION</p><h2>构建你的知识底座</h2></div>
-          <p>上传 PDF 或 Markdown，系统将自动解析图片、切分语义块、识别产品主体并写入 Milvus。</p>
+          <div><p class="eyebrow" id="libraryEyebrow">KNOWLEDGE WORKSPACE</p><h2 id="libraryHeading">知识库概览</h2></div>
+          <p id="libraryDescription">管理知识库，查看文档与切片，让每条答案都能回到原始资料。</p>
         </div>
+
+        <div class="workspace-context">
+          <label for="knowledgeBaseSelect">当前知识库 <select id="knowledgeBaseSelect"></select></label>
+          <div><button id="exportKnowledgeBaseButton" type="button">导出 ZIP</button><button id="refreshDocumentsButton" type="button">刷新数据</button></div>
+        </div>
+
+        <div class="library-page" data-library-page="library">
+          <div class="overview-metrics" id="knowledgeOverviewMetrics" aria-live="polite"></div>
 
         <section class="management-card">
           <div class="card-heading"><div><p class="eyebrow">KNOWLEDGE BASES</p><h3>知识库管理</h3></div></div>
@@ -129,11 +142,16 @@
             <input id="knowledgeBaseDescription" maxlength="1000" placeholder="说明（可选）">
             <button class="primary-button" type="submit">创建知识库</button>
           </form>
-          <div class="knowledge-toolbar">
-            <label>当前知识库 <select id="knowledgeBaseSelect"></select></label>
-            <span><button id="exportKnowledgeBaseButton" type="button">导出 ZIP</button><button id="refreshDocumentsButton" type="button">刷新文档</button></span>
-          </div>
         </section>
+
+          <div class="page-shortcuts">
+            <button type="button" data-go-page="import"><span>01 / INGEST</span><strong>添加资料</strong><small>上传 PDF 或 Markdown 并跟踪处理</small><b>↗</b></button>
+            <button type="button" data-go-page="documents"><span>02 / MANAGE</span><strong>知识管理</strong><small>查看文档、切片、任务与评测</small><b>↗</b></button>
+            <button type="button" data-go-page="chunks"><span>03 / CHUNKS</span><strong>浏览切片</strong><small>直接打开管理页的知识切片</small><b>↗</b></button>
+          </div>
+        </div>
+
+        <div class="library-page" data-library-page="import" hidden>
 
         <div class="library-grid">
           <section class="upload-card">
@@ -166,12 +184,59 @@
           <article><span>02</span><div><strong>语义切分</strong><p>按标题与上下文生成高质量切片</p></div></article>
           <article><span>03</span><div><strong>混合向量</strong><p>BGE-M3 稠密与稀疏向量联合检索</p></div></article>
         </div>
+        </div>
 
-        <section class="management-card">
+        <div class="library-page" data-library-page="documents" hidden>
+        <div class="kb-content-tabs" role="tablist" aria-label="知识内容类型">
+          <button type="button" class="tab-button active" data-tab="documents" role="tab" aria-controls="documentsPanel" aria-selected="true">文档与版本</button>
+          <button type="button" class="tab-button" data-tab="chunks" role="tab" aria-controls="chunksPanel" aria-selected="false">知识切片</button>
+        </div>
+        <section class="management-card" id="documentsPanel" role="tabpanel">
           <div class="card-heading"><div><p class="eyebrow">DOCUMENTS</p><h3>文档与版本</h3></div><span id="documentCount">0 个文档</span></div>
           <div id="documentList" class="document-list"><p class="empty-hint">请选择或创建知识库。</p></div>
+          <div class="pagination" id="documentPagination" hidden>
+            <button type="button" id="documentPrevPage">上一页</button>
+            <span id="documentPageInfo">第 1 页 / 共 1 页</span>
+            <button type="button" id="documentNextPage">下一页</button>
+          </div>
         </section>
+        <section class="management-card" id="chunksPanel" role="tabpanel" hidden>
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">KNOWLEDGE</p>
+              <h3>知识切片</h3>
+            </div>
+            <span id="chunkCount">0 条知识</span>
+          </div>
 
+          <p class="section-description">按来源文档和关键词定位切片，点开卡片可查看完整文本与来源信息。</p>
+          <div class="chunk-toolbar">
+            <label class="search-field" for="chunkKeyword"><span>⌕</span><input type="search" id="chunkKeyword" maxlength="200" placeholder="搜索切片标题或正文" class="search-input"></label>
+            <select id="chunkDocumentFilter" aria-label="按来源文档筛选">
+              <option value="">全部文档</option>
+            </select>
+            <button type="button" id="chunkSearchBtn" class="primary-button">搜索</button>
+            <button type="button" id="chunkRefreshBtn">刷新</button>
+          </div>
+
+          <div class="list-summary chunk-list-summary">
+            <strong id="chunkRange">暂无切片</strong>
+            <label>每页 <select id="chunkPageSize" aria-label="切片每页条数"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option></select> 条</label>
+          </div>
+
+          <div id="chunkList" class="chunk-list" aria-live="polite">
+            <p class="empty-hint">请选择知识库后加载知识内容。</p>
+          </div>
+
+          <div class="pagination" id="chunkPagination" hidden>
+            <button type="button" id="chunkFirstPage">首页</button>
+            <button type="button" id="chunkPrevPage">上一页</button>
+            <span class="page-numbers" id="chunkPageNumbers" aria-label="切片页码"></span>
+            <span id="chunkPageInfo">第 1 页 / 共 1 页</span>
+            <button type="button" id="chunkNextPage">下一页</button>
+            <button type="button" id="chunkLastPage">末页</button>
+          </div>
+        </section>
         <section class="management-card" id="operationsSection">
           <div class="card-heading"><div><p class="eyebrow">OPERATIONS</p><h3>运行状态</h3></div><button id="refreshOperationsButton" type="button">刷新</button></div>
           <div class="operations-metrics" id="operationsMetrics"></div>
@@ -189,12 +254,17 @@
           <div class="user-list" id="userList"><p class="empty-hint">暂无账号。</p></div>
         </section>
 
-        <section class="management-card" id="auditSection" hidden>
+        </div>
+
+        <div class="library-page audit-page" data-library-page="audit" hidden>
+        <section class="management-card" id="auditSection">
           <div class="card-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h3>安全审计日志</h3></div><button id="refreshAuditButton" type="button">刷新</button></div>
+          <p class="section-description">按操作与结果筛选，查看每次访问和数据变更的审计记录。</p>
           <div class="audit-toolbar">
             <select id="auditActionFilter" aria-label="按操作筛选">
               <option value="">全部操作</option>
               <option value="auth.login">账号登录</option>
+              <option value="auth.logout">账号退出</option>
               <option value="user.create">创建账号</option>
               <option value="user.update">更新账号</option>
               <option value="knowledge_base.create">创建知识库</option>
@@ -202,26 +272,46 @@
               <option value="knowledge_base.delete">删除知识库</option>
               <option value="document.import">文档入库</option>
               <option value="document.delete">删除文档</option>
+              <option value="document.retry">重试文档</option>
+              <option value="query.create">发起问答</option>
+              <option value="evaluation.create">运行评测</option>
+              <option value="evaluation.baseline">更新评测基线</option>
               <option value="task.cancel">取消任务</option>
+              <option value="task.retry">重试任务</option>
             </select>
             <select id="auditOutcomeFilter" aria-label="按结果筛选">
               <option value="">全部结果</option><option value="success">成功</option><option value="failure">失败</option><option value="denied">拒绝</option>
             </select>
-            <span id="auditTotal">0 条记录</span>
           </div>
+          <div class="list-summary"><strong id="auditTotal">0 条记录</strong><label>每页 <select id="auditPageSize" aria-label="审计每页条数"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option></select> 条</label></div>
           <div class="audit-list" id="auditList"><p class="empty-hint">暂无审计记录。</p></div>
+          <div class="pagination" id="auditPagination" hidden>
+            <button type="button" id="auditPrevPage">上一页</button>
+            <span id="auditPageInfo">第 1 页 / 共 1 页</span>
+            <button type="button" id="auditNextPage">下一页</button>
+          </div>
         </section>
+        </div>
 
+        <div class="library-page evaluation-page" data-library-page="evaluation" hidden>
         <section class="management-card" id="evaluationSection">
           <div class="card-heading"><div><p class="eyebrow">EVALUATION</p><h3>RAG 效果评测</h3></div><span id="evaluationState">尚未运行</span></div>
-          <form id="evaluationForm" class="inline-form">
-            <input id="evaluationFile" type="file" accept=".jsonl" required>
+          <p class="section-description">上传标准问答集，查看通过率、关键词召回和回归门禁。</p>
+          <form id="evaluationForm" class="evaluation-upload-form">
+            <label for="evaluationFile">评测数据集 <input id="evaluationFile" type="file" accept=".jsonl" required></label>
             <button class="primary-button" type="submit">运行评测</button>
           </form>
-          <p class="composer-note">JSONL 每行包含 question、expected_keywords，可选 knowledge_base_ids。</p>
+          <p class="form-hint">JSONL 每行包含 question、expected_keywords，可选 knowledge_base_ids。</p>
           <div id="evaluationResult" class="import-result" hidden></div>
+          <div class="list-summary"><strong id="evaluationTotal">0 条评测记录</strong><label>每页 <select id="evaluationPageSize" aria-label="评测每页条数"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option></select> 条</label></div>
           <div class="evaluation-history" id="evaluationHistory"><p class="empty-hint">暂无评测记录。</p></div>
+          <div class="pagination" id="evaluationPagination" hidden>
+            <button type="button" id="evaluationPrevPage">上一页</button>
+            <span id="evaluationPageInfo">第 1 页 / 共 1 页</span>
+            <button type="button" id="evaluationNextPage">下一页</button>
+          </div>
         </section>
+        </div>
       </section>
     </main>
   </div>

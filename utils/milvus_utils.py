@@ -1,11 +1,25 @@
 import json
+import os
+import sys
+import time
+from urllib.parse import urlsplit
 
-from pymilvus import MilvusClient, WeightedRanker, AnnSearchRequest
+from pymilvus import MilvusClient, WeightedRanker, AnnSearchRequest, connections
 
 from config.milvus_config import milvus_config
 from tool.logger import logger
 
 _milvus_client = None
+
+
+def ensure_milvus_no_proxy(uri: str) -> None:
+    """让直连的 Milvus 地址绕过工作站代理，保留已有代理例外。"""
+    hostname = urlsplit(uri).hostname
+    if not hostname:
+        return
+    bypass_hosts = [value.strip() for value in os.environ.get("NO_PROXY", "").split(",") if value.strip()]
+    if hostname not in bypass_hosts:
+        os.environ["NO_PROXY"] = ",".join([*bypass_hosts, hostname])
 
 
 def build_metadata_filter(item_names=None, knowledge_base_ids=None):
@@ -27,6 +41,7 @@ def get_milvus_client():
     if _milvus_client is not None:
         return _milvus_client
 
+    ensure_milvus_no_proxy(milvus_config.milvus_url)
     _milvus_client = MilvusClient(uri=milvus_config.milvus_url)
 
     return _milvus_client
@@ -112,3 +127,66 @@ def hybrid_search(client, collection_name, reqs, ranker_weights=(0.5, 0.5), norm
     except Exception as e:
         logger.error(f"Milvus混合搜索执行失败，集合[{collection_name}]：{str(e)}", exc_info=True)
         return None
+
+
+def test_milvus_connection(timeout: int = 10) -> bool:
+    """
+    测试 Milvus 连接是否正常（用于诊断网络/配置问题）
+
+    Args:
+        timeout: 连接超时时间（秒）
+
+    Returns:
+        bool: 连接是否成功
+    """
+    print("=" * 60)
+    print("开始测试 Milvus 连接")
+    print(f"MILVUS_URL = {milvus_config.milvus_url}")
+    print(f"超时设置   = {timeout} 秒")
+    print("=" * 60)
+
+    start_time = time.time()
+
+    try:
+        # 使用项目统一的 MilvusClient
+        print("\n[1/3] 正在创建 MilvusClient ...")
+        ensure_milvus_no_proxy(milvus_config.milvus_url)
+        client = MilvusClient(uri=milvus_config.milvus_url)
+
+        print("[2/3] 正在测试连接（list_collections）...")
+        collections = client.list_collections()
+        print(f"✓ 连接成功！当前集合数量: {len(collections)}")
+
+        if collections:
+            print(f"  部分集合: {collections[:5]}")
+
+        # 底层健康检查
+        print("\n[3/3] 执行底层连接健康检查 ...")
+        connections.connect(
+            alias="test_conn",
+            uri=milvus_config.milvus_url,
+            timeout=timeout
+        )
+        connections.disconnect("test_conn")
+        print("✓ 底层连接测试通过")
+
+        elapsed = time.time() - start_time
+        print(f"\n✅ Milvus 连接测试成功！耗时: {elapsed:.2f} 秒")
+        logger.info(f"Milvus 连接测试成功，耗时 {elapsed:.2f} 秒")
+        return True
+
+    except Exception as e:
+        elapsed = time.time() - start_time
+        print(f"\n❌ Milvus 连接失败！")
+        print(f"错误类型: {type(e).__name__}")
+        print(f"错误信息: {str(e)}")
+        print(f"耗时: {elapsed:.2f} 秒")
+        logger.error(f"Milvus 连接测试失败: {str(e)}", exc_info=True)
+        return False
+
+
+if __name__ == "__main__":
+    # 支持命令行传入超时时间
+    timeout = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+    success = test_milvus_connection(timeout=timeout)
+    sys.exit(0 if success else 1)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -11,6 +12,16 @@ from typing import Any, Iterable
 from bson import ObjectId
 from pymongo import ASCENDING, DESCENDING, MongoClient, ReturnDocument
 from pymongo.errors import DuplicateKeyError
+
+from config.milvus_config import milvus_config
+from utils.milvus_utils import get_milvus_client
+
+
+def escape_milvus_string(value: str) -> str:
+    """Escape special characters for Milvus filter expressions."""
+    if not value:
+        return ""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'")
 
 
 def utc_now() -> datetime:
@@ -48,6 +59,7 @@ class MetadataService:
         self.db = self.client[database_name]
         self.knowledge_bases = self.db["knowledge_bases"]
         self.documents = self.db["knowledge_documents"]
+        self.chunks = self.db["knowledge_chunks"]
         self.tasks = self.db["background_tasks"]
         self.chat_sessions = self.db["chat_sessions"]
         self.evaluation_runs = self.db["evaluation_runs"]
@@ -64,6 +76,9 @@ class MetadataService:
             [("knowledge_base_id", ASCENDING), ("filename", ASCENDING), ("version", ASCENDING)], unique=True
         )
         self.documents.create_index([("knowledge_base_id", ASCENDING), ("status", ASCENDING)])
+        self.chunks.create_index([("knowledge_base_id", ASCENDING), ("document_id", ASCENDING)])
+        self.chunks.create_index([("knowledge_base_id", ASCENDING), ("created_at", DESCENDING)])
+        self.chunks.create_index([("knowledge_base_id", ASCENDING), ("content", ASCENDING)])  # for keyword search
         self.tasks.create_index([("status", ASCENDING), ("created_at", ASCENDING)])
         self.tasks.create_index("task_id", unique=True)
         self.chat_sessions.create_index("session_id", unique=True)
@@ -144,7 +159,9 @@ class MetadataService:
             if end_at:
                 created_at["$lte"] = end_at
             query["created_at"] = created_at
-        records = self.audit_logs.find(query).sort("created_at", DESCENDING).skip(skip).limit(limit)
+        records = self.audit_logs.find(query).sort(
+            [("created_at", DESCENDING), ("_id", DESCENDING)]
+        ).skip(skip).limit(limit)
         return {
             "items": [serialize(item) for item in records],
             "total": self.audit_logs.count_documents(query),
@@ -586,10 +603,19 @@ class MetadataService:
         self.evaluation_runs.insert_one(record)
         return serialize(record)
 
-    def list_evaluation_runs(self, limit: int = 20, owner_user_id: str | None = None) -> list[dict[str, Any]]:
+    def list_evaluation_runs(
+        self, limit: int = 20, owner_user_id: str | None = None, skip: int = 0
+    ) -> dict[str, Any]:
         query = {"owner_user_id": owner_user_id} if owner_user_id else {}
-        records = self.evaluation_runs.find(query).sort("created_at", DESCENDING).limit(limit)
-        return [serialize(item) for item in records]
+        records = self.evaluation_runs.find(query).sort(
+            [("created_at", DESCENDING), ("_id", DESCENDING)]
+        ).skip(skip).limit(limit)
+        return {
+            "items": [serialize(item) for item in records],
+            "total": self.evaluation_runs.count_documents(query),
+            "skip": skip,
+            "limit": limit,
+        }
 
     def get_evaluation_run(self, evaluation_id: str, owner_user_id: str | None = None) -> dict[str, Any] | None:
         query: dict[str, Any] = {"evaluation_id": evaluation_id}
@@ -632,6 +658,121 @@ class MetadataService:
             query["dataset_name"] = candidate.get("dataset_name")
         record = self.evaluation_runs.find_one(query, sort=[("baseline_at", DESCENDING)])
         return serialize(record) if record else None
+
+    # ==================== Knowledge Chunks (MongoDB persisted) ====================
+    def insert_chunks(self, chunks: list[dict[str, Any]], *, knowledge_base_id: str, document_id: str, version: int) -> int:
+        """Persist chunk metadata to MongoDB for fast listing & search."""
+        if not chunks:
+            return 0
+        self.delete_chunks_by_document(document_id)
+        now = utc_now()
+        docs = []
+        for c in chunks:
+            doc = {
+                "chunk_id": c.get("chunk_id"),
+                "content": c.get("content", ""),
+                "title": c.get("title", ""),
+                "parent_title": c.get("parent_title", ""),
+                "part": c.get("part", 0),
+                "source_document": c.get("file_title", ""),
+                "logical_document_id": document_id,
+                "document_id": document_id,
+                "knowledge_base_id": knowledge_base_id,
+                "version": version,
+                "metadata": {
+                    "item_name": c.get("item_name", ""),
+                    "knowledge_base_id": knowledge_base_id,
+                },
+                "created_at": now,
+                "updated_at": now,
+            }
+            docs.append(doc)
+        if docs:
+            self.chunks.insert_many(docs)
+        return len(docs)
+
+    def delete_chunks_by_document(self, document_id: str) -> int:
+        return self.chunks.delete_many({"document_id": document_id}).deleted_count
+
+    def list_chunks(
+        self,
+        knowledge_base_id: str,
+        *,
+        skip: int = 0,
+        limit: int = 20,
+        keyword: str | None = None,
+        document_id: str | None = None,
+    ) -> dict[str, Any]:
+        """List chunks from MongoDB knowledge_chunks (preferred for listing & keyword search)."""
+        current_ids = self.documents.distinct(
+            "document_id", {"knowledge_base_id": knowledge_base_id, "is_current": True, "status": "ready"}
+        )
+        query: dict[str, Any] = {"knowledge_base_id": knowledge_base_id, "document_id": {"$in": current_ids}}
+        if document_id:
+            query["document_id"] = document_id if document_id in current_ids else {"$in": []}
+        if keyword:
+            query["$or"] = [
+                {"content": {"$regex": re.escape(keyword), "$options": "i"}},
+                {"title": {"$regex": re.escape(keyword), "$options": "i"}},
+            ]
+
+        cursor = (
+            self.chunks.find(query)
+            .sort([("created_at", DESCENDING), ("_id", DESCENDING)])
+            .skip(skip)
+            .limit(limit)
+        )
+        items = []
+        for r in cursor:
+            items.append({
+                "_id": str(r.get("_id")),
+                "chunk_id": r.get("chunk_id"),
+                "content": r.get("content"),
+                "title": r.get("title"),
+                "parent_title": r.get("parent_title"),
+                "part": r.get("part"),
+                "source_document": r.get("source_document"),
+                "logical_document_id": r.get("logical_document_id"),
+                "version": r.get("version"),
+                "metadata": r.get("metadata", {}),
+                "created_at": serialize(r.get("created_at")),
+            })
+
+        total = self.chunks.count_documents(query)
+        return {"items": items, "total": total}
+
+    def get_chunk(self, knowledge_base_id: str, chunk_id: str) -> dict[str, Any] | None:
+        """Get single chunk detail from MongoDB."""
+        current_ids = self.documents.distinct(
+            "document_id", {"knowledge_base_id": knowledge_base_id, "is_current": True, "status": "ready"}
+        )
+        record = self.chunks.find_one({
+            "knowledge_base_id": knowledge_base_id,
+            "document_id": {"$in": current_ids},
+            "$or": [{"_id": ObjectId(chunk_id) if ObjectId.is_valid(chunk_id) else None}, {"chunk_id": chunk_id}]
+        })
+        if not record:
+            return None
+        record = serialize(record)
+        record["_id"] = str(record.get("_id"))
+        return record
+
+    def get_kb_stats(self, knowledge_base_id: str) -> dict[str, Any]:
+        """Return basic health stats for a knowledge base."""
+        current_ids = self.documents.distinct(
+            "document_id", {"knowledge_base_id": knowledge_base_id, "is_current": True, "status": "ready"}
+        )
+        query = {"knowledge_base_id": knowledge_base_id, "document_id": {"$in": current_ids}}
+        total_chunks = self.chunks.count_documents(query)
+        total_docs = len(current_ids)
+        last_updated = self.chunks.find(query).sort("created_at", DESCENDING).limit(1)
+        last = list(last_updated)
+        return {
+            "knowledge_base_id": knowledge_base_id,
+            "total_chunks": total_chunks,
+            "total_documents": total_docs,
+            "last_updated": serialize(last[0]["created_at"]) if last else None,
+        }
 
 
 _service: MetadataService | None = None

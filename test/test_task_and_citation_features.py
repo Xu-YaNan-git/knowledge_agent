@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 
 from pymongo.errors import DuplicateKeyError
 
+import app as app_module
 from app import (
     _document_source_object_name,
     _document_media_type,
@@ -46,6 +47,7 @@ def test_local_citation_keeps_document_metadata() -> None:
             "parent_title": "硬件规格",
             "document_id": "doc-1",
             "knowledge_base_id": "kb-1",
+
         }],
         "web_search_docs": [],
     }
@@ -285,3 +287,31 @@ def test_scoped_query_continues_when_product_name_is_not_recognized() -> None:
 
     assert result["answer"] == ""
     assert result["item_names"] == []
+
+
+def test_failed_document_retry_submits_task(monkeypatch) -> None:
+    """失败文档恢复后必须真正提交后台任务并返回任务标识。"""
+    submitted = []
+
+    class RetryService:
+        def get_document(self, document_id):
+            return {"document_id": document_id, "status": "failed", "task_id": "task-1"}
+
+        def get_task(self, task_id):
+            return {"task_id": task_id}
+
+        def restart_document_version(self, document_id):
+            return True
+
+        def retry_task(self, task_id):
+            return {"task_id": task_id, "type": "import", "payload": {}}
+
+    monkeypatch.setattr(app_module, "get_metadata_service", lambda: RetryService())
+    monkeypatch.setattr(app_module, "_restore_document_source", lambda document, task: None)
+    monkeypatch.setattr(app_module, "_submit_task", submitted.append)
+
+    result = app_module.retry_document("document-1")
+
+    assert result.task_id == "task-1"
+    assert result.session_id == "document-1"
+    assert len(submitted) == 1

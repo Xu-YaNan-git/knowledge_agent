@@ -44,6 +44,12 @@ from services.auth_service import (
 )
 from services.metadata_service import get_metadata_service, utc_now
 from tool.logger import logger
+from utils.minio_utils import close_minio_client, initialize_minio_client, peek_minio_client
+from utils.mongo_history_utils import (
+    close_history_mongo_tool,
+    initialize_history_mongo_tool,
+    peek_history_mongo_tool,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 # Local development reads the project .env, while deployment-provided variables keep precedence.
@@ -467,7 +473,16 @@ def _run_import_task(task_id: str, payload: dict[str, Any]) -> None:
                     final_state.update(update)
         chunk_count = len(final_state.get("chunks") or [])
         item_name = final_state.get("item_name") or ""
+        chunks_data = final_state.get("chunks") or []
+        if chunks_data:
+            service.insert_chunks(
+                chunks_data,
+                knowledge_base_id=payload["knowledge_base_id"],
+                document_id=document_id,
+                version=payload["version"],
+            )
         service.complete_document_version(document_id, chunk_count=chunk_count, item_name=item_name)
+
         if payload.get("previous_document_id"):
             try:
                 _delete_document_assets(payload["previous_document_id"])
@@ -615,23 +630,58 @@ async def _maintenance_loop(stop_event: asyncio.Event) -> None:
             continue
 
 
+async def _initialize_external_dependencies(application: FastAPI) -> dict[str, str]:
+    """Initialize independent external clients without coupling their failures."""
+    errors: dict[str, str] = {}
+    initializers = (
+        ("minio", initialize_minio_client),
+        ("history_mongodb", initialize_history_mongo_tool),
+    )
+    async def initialize_one(name: str, initializer) -> None:
+        try:
+            await asyncio.to_thread(initializer)
+        except Exception:
+            errors[name] = "unavailable"
+            logger.exception("外部依赖初始化失败，dependency=%s", name)
+
+    await asyncio.gather(*(initialize_one(name, initializer) for name, initializer in initializers))
+    application.state.dependency_errors = errors
+    return errors
+
+
+async def _shutdown_external_dependencies() -> None:
+    """Drain business work before closing the shared external clients."""
+    await asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=False)
+    for name, closer in (
+        ("history_mongodb", close_history_mongo_tool),
+        ("minio", close_minio_client),
+    ):
+        try:
+            await asyncio.to_thread(closer)
+        except Exception:
+            logger.exception("外部依赖关闭失败，dependency=%s", name)
+
+
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(application: FastAPI):
     maintenance_stop = asyncio.Event()
     maintenance_task: asyncio.Task | None = None
+    await _initialize_external_dependencies(application)
     try:
         for task in get_metadata_service().recoverable_tasks():
             _submit_task(task)
         get_auth_service().bootstrap_admin()
-        maintenance_task = asyncio.create_task(_maintenance_loop(maintenance_stop))
     except Exception:
         # 保持存活检查可用，让就绪检查明确报告依赖异常。
         logger.exception("持久化或认证初始化失败，相关业务接口暂不可用")
-    yield
-    maintenance_stop.set()
-    if maintenance_task:
-        await maintenance_task
-    executor.shutdown(wait=False, cancel_futures=False)
+    maintenance_task = asyncio.create_task(_maintenance_loop(maintenance_stop))
+    try:
+        yield
+    finally:
+        maintenance_stop.set()
+        if maintenance_task:
+            await maintenance_task
+        await _shutdown_external_dependencies()
 
 
 app = FastAPI(title="Knowledge Base Console", version="2.0.0", lifespan=lifespan)
@@ -895,16 +945,26 @@ def readiness() -> dict[str, Any]:
         dependencies["milvus"] = "unavailable"
     try:
         from config.minio_config import minio_config
-        from utils.minio_utils import get_minio_client
-        minio_client = get_minio_client()
+        minio_client = peek_minio_client()
         buckets_ready = (
             minio_client is not None
             and minio_client.bucket_exists(minio_config.bucket_name)
             and minio_client.bucket_exists(minio_config.document_bucket_name)
         )
-        dependencies["minio"] = "ok" if buckets_ready else "bucket_missing"
+        dependencies["minio"] = "ok" if buckets_ready else (
+            "unavailable" if minio_client is None else "bucket_missing"
+        )
     except Exception:
         dependencies["minio"] = "unavailable"
+    history_tool = peek_history_mongo_tool()
+    if history_tool is None:
+        dependencies["history_mongodb"] = "unavailable"
+    else:
+        try:
+            history_tool.client.admin.command("ping")
+            dependencies["history_mongodb"] = "ok"
+        except Exception:
+            dependencies["history_mongodb"] = "unavailable"
     required_config = [
         "OPENAI_API_KEY", "OPENAI_API_BASE", "LLM_DEFAULT_MODEL",
         "MILVUS_URL", "MONGO_URL", "MONGO_DB_NAME",
@@ -1084,6 +1144,57 @@ def get_knowledge_base(knowledge_base_id: str) -> dict[str, Any]:
     return record
 
 
+@app.get("/api/knowledge-bases/{knowledge_base_id}/chunks")
+def list_knowledge_base_chunks(
+    knowledge_base_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    keyword: str | None = Query(None, max_length=200),
+    document_id: str | None = Query(None),
+) -> dict[str, Any]:
+    """List knowledge chunks (paginated, searchable) for a knowledge base."""
+    service = get_metadata_service()
+    if not service.get_knowledge_base(knowledge_base_id):
+        raise HTTPException(status_code=404, detail="知识库不存在")
+
+    skip = (page - 1) * page_size
+    result = service.list_chunks(
+        knowledge_base_id,
+        skip=skip,
+        limit=page_size,
+        keyword=keyword,
+        document_id=document_id,
+    )
+    return {
+        "items": result["items"],
+        "total": result["total"],
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@app.get("/api/knowledge-bases/{knowledge_base_id}/chunks/{chunk_id}")
+def get_knowledge_base_chunk(knowledge_base_id: str, chunk_id: str) -> dict[str, Any]:
+    """Get single chunk detail."""
+    service = get_metadata_service()
+    if not service.get_knowledge_base(knowledge_base_id):
+        raise HTTPException(status_code=404, detail="知识库不存在")
+
+    chunk = service.get_chunk(knowledge_base_id, chunk_id)
+    if not chunk:
+        raise HTTPException(status_code=404, detail="知识条目不存在")
+    return chunk
+
+
+@app.get("/api/knowledge-bases/{knowledge_base_id}/stats")
+def get_knowledge_base_stats(knowledge_base_id: str) -> dict[str, Any]:
+    """Knowledge base health stats (total chunks, docs, last update)."""
+    service = get_metadata_service()
+    if not service.get_knowledge_base(knowledge_base_id):
+        raise HTTPException(status_code=404, detail="知识库不存在")
+    return service.get_kb_stats(knowledge_base_id)
+
+
 @app.post("/api/knowledge-bases/{knowledge_base_id}/exports", response_model=TaskCreatedResponse, status_code=202)
 def create_knowledge_base_export(knowledge_base_id: str, request: Request) -> TaskCreatedResponse:
     service = get_metadata_service()
@@ -1236,6 +1347,27 @@ def retry_document(document_id: str) -> TaskCreatedResponse:
         raise HTTPException(status_code=409, detail="文档任务当前不可重试")
     _submit_task(task)
     return TaskCreatedResponse(task_id=task["task_id"], session_id=document_id)
+
+
+@app.post("/api/documents/{document_id}/discard-processing")
+def discard_processing_document(document_id: str) -> dict[str, bool]:
+    """清除卡住的 processing 状态记录，允许重新上传相同文件。"""
+    service = get_metadata_service()
+    document = service.get_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    if document.get("status") != "processing":
+        raise HTTPException(status_code=409, detail="只有 processing 状态的文档才能清除")
+
+    if document.get("is_current"):
+        raise HTTPException(status_code=409, detail="当前版本不能直接清除")
+
+    deleted = service.discard_processing_document(document_id)
+    if not deleted:
+        raise HTTPException(status_code=409, detail="未能清除 processing 记录")
+
+    return {"discarded": True}
 
 
 @app.post("/api/query", response_model=TaskCreatedResponse, status_code=202)
@@ -1484,7 +1616,18 @@ async def import_document(knowledge_base_id: str, request: Request, file: Upload
         )
     except DuplicateKeyError as exc:
         target_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=409, detail="同一文档已有版本正在处理中，请稍后重试") from exc
+        # 尝试找到正在 processing 的文档，返回 document_id 给前端
+        existing = service.documents.find_one({
+            "knowledge_base_id": knowledge_base_id,
+            "filename": original_name,
+            "status": "processing",
+            "is_current": False
+        })
+        detail = {
+            "message": "同一文档已有版本正在处理中，请稍后重试",
+            "document_id": str(existing["_id"]) if existing else None
+        }
+        raise HTTPException(status_code=409, detail=detail) from exc
     if duplicate:
         target_path.unlink(missing_ok=True)
         _safe_remove_task_directory(UPLOAD_DIR, task_id)
@@ -1577,9 +1720,14 @@ async def create_evaluation(
 
 
 @app.get("/api/evaluations")
-def list_evaluations(request: Request, limit: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
-    items = get_metadata_service().list_evaluation_runs(limit, owner_user_id=_owner_scope(request))
-    return {"items": items, "total": len(items)}
+def list_evaluations(
+    request: Request,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+) -> dict[str, Any]:
+    return get_metadata_service().list_evaluation_runs(
+        limit, owner_user_id=_owner_scope(request), skip=skip
+    )
 
 
 @app.get("/api/evaluations/{evaluation_id}")
